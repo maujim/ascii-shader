@@ -1,7 +1,7 @@
 import React, { useRef, useState, useMemo, useEffect, useLayoutEffect } from 'react'
 import { Canvas, useFrame, useLoader } from '@react-three/fiber'
 import { EffectComposer } from '@react-three/postprocessing'
-import { useControls, button } from 'leva'
+import { useControls, button, folder } from 'leva'
 import { Effect } from 'postprocessing'
 import { Uniform, CanvasTexture, NearestFilter, RepeatWrapping, Box3, Vector3 } from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader'
@@ -187,15 +187,16 @@ function CustomGeometry({ url }) {
 
 // --- 3. ROTATING WRAPPER COMPONENT ---
 
-function RotatingMesh({ children, scale = 1 }) {
+function RotatingMesh({ children, scale = 1, rotationSettings }) {
   const ref = useRef()
   const [hovered, setHover] = useState(false)
   const [clicked, setClick] = useState(false)
 
   useFrame((state, delta) => {
     if (ref.current) {
-      ref.current.rotation.x += 0.66 * delta
-      ref.current.rotation.y += 0.66 * delta
+      ref.current.rotation.x += rotationSettings.x * delta
+      ref.current.rotation.y += rotationSettings.y * delta
+      ref.current.rotation.z += rotationSettings.z * delta
     }
   })
 
@@ -216,27 +217,29 @@ function RotatingMesh({ children, scale = 1 }) {
 // --- 4. SCENE COMPONENT ---
 
 function Scene({ inputRef, customModelUrl }) {
-  // Global controls
-  // We use the "api" returned by useControls (the second argument `set`) to programmatically update controls
-  const [{ chars, model, scale }, setControls] = useControls("Settings", () => ({
+  const [{ chars, model, scale, rotX, rotY, rotZ }, setControls] = useControls("Settings", () => ({
     chars: " .,=mukund",
-    // Button to trigger file input (ref is passed from App)
     upload: button(() => inputRef.current?.click()),
     model: { 
       value: 'TorusKnot', 
       options: ['TorusKnot', 'Box', 'Sphere', 'Icosahedron', 'Custom'] 
     },
     scale: { value: 0.75, min: 0.1, max: 3 },
+    
+    // New Rotation Folder
+    Rotation: folder({
+      rotX: { value: 0.66, min: -5, max: 5, label: 'X Speed' },
+      rotY: { value: 0.66, min: -5, max: 5, label: 'Y Speed' },
+      rotZ: { value: 0,    min: -5, max: 5, label: 'Z Speed' },
+    })
   }))
 
-  // Automatically switch the dropdown to 'Custom' when a new file is uploaded
   useEffect(() => {
     if (customModelUrl) {
       setControls({ model: 'Custom' })
     }
   }, [customModelUrl, setControls])
 
-  // Create effect
   const effect = useMemo(() => {
     return new AsciiEffect({
       characters: chars,
@@ -255,7 +258,10 @@ function Scene({ inputRef, customModelUrl }) {
       <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} decay={0} intensity={Math.PI} />
       <pointLight position={[-10, -10, -10]} decay={0} intensity={Math.PI} />
 
-      <RotatingMesh scale={scale}>
+      <RotatingMesh 
+        scale={scale} 
+        rotationSettings={{ x: rotX, y: rotY, z: rotZ }}
+      >
         {model === 'TorusKnot' && <TorusKnotGeometry />}
         {model === 'Box' && <BoxGeometry />}
         {model === 'Sphere' && <SphereGeometry />}
@@ -286,7 +292,6 @@ export default function App() {
 
   return (
     <>
-      {/* HTML Input must be OUTSIDE the Canvas */}
       <input 
         type="file" 
         ref={inputRef} 
