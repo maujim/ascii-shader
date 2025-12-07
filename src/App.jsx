@@ -1,6 +1,11 @@
-import React, { useRef, useState } from 'react'
-import { Canvas, useFrame } from '@react-three/fiber'
+import React, { useRef, useState, useMemo, useEffect } from 'react'
+import { Canvas, useFrame, useThree, extend } from '@react-three/fiber'
 import { useControls } from 'leva'
+import { EffectComposer, RenderPass, EffectPass } from 'postprocessing'
+import { Effect } from 'postprocessing'
+import { Uniform, Color, CanvasTexture, NearestFilter, RepeatWrapping } from 'three'
+
+extend({ EffectComposer, RenderPass, EffectPass })
 
 const fragmentShader = `
 uniform sampler2D uCharacters;
@@ -26,47 +31,75 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
     vec2 pixelizedUV = grid * (0.5 + floor(uv / grid));
     vec4 pixelized = texture2D(inputBuffer, pixelizedUV);
     float greyscaled = greyscale(pixelized.rgb).r;
-
+    
     if (uInvert) {
         greyscaled = 1.0 - greyscaled;
     }
-
-    // Scale greyscale value to the range of the available character set
+    
     float characterIndex = floor((uCharactersCount - 1.0) * greyscaled);
-
-    // If there are fewer characters, we want to avoid the space character being overly dominant.
-    // This adjustment ensures that fewer characters (e.g., 6) still fill the entire space.
-    float scaleFactor = max(1.0, float(uCharactersCount) / 20.0);
-    characterIndex = floor(characterIndex * scaleFactor);
-
-    // Map the character index to the correct character in the set
     vec2 characterPosition = vec2(mod(characterIndex, SIZE.x), floor(characterIndex / SIZE.y));
     vec2 offset = vec2(characterPosition.x, -characterPosition.y) / SIZE;
     vec2 charUV = mod(uv * (cell / SIZE), 1.0 / SIZE) - vec2(0., 1.0 / SIZE) + offset;
     vec4 asciiCharacter = texture2D(uCharacters, charUV);
-
-    asciiCharacter.rgb = pixelized.rgb * asciiCharacter.r;
+    asciiCharacter.rgb = uColor * asciiCharacter.r;
     asciiCharacter.a = pixelized.a;
-
-    float boundarySize = 0.1;
-    float transitionStart = 0.5 - (boundarySize / 16.0);
-    float transitionEnd = 0.5 + (boundarySize / 8.0);
-
-    // smooth transition between regular and ascii
-    float blendFactor = smoothstep(transitionStart, transitionEnd, uv.x); // Adjust 0.45 - 0.55 for a smoother or sharper transition
-    vec4 originalColor = texture2D(inputBuffer, uv);
-    outputColor = mix(originalColor, asciiCharacter, blendFactor);
+    outputColor = asciiCharacter;
 }
 `
+
+class ASCIIEffect extends Effect {
+  constructor({ characters = 'abcd', fontSize = 54, cellSize = 16, color = '#ffffff', invert = false } = {}) {
+    const uniforms = new Map([
+      ['uCharacters', new Uniform(null)],
+      ['uCellSize', new Uniform(cellSize)],
+      ['uCharactersCount', new Uniform(characters.length)],
+      ['uColor', new Uniform(new Color(color))],
+      ['uInvert', new Uniform(invert)]
+    ])
+    super('ASCIIEffect', fragmentShader, { uniforms })
+    this.updateCharacters(characters, fontSize)
+  }
+
+  updateCharacters(characters, fontSize) {
+    const canvas = document.createElement('canvas')
+    const SIZE = 1024
+    const MAX_PER_ROW = 16
+    const CELL = SIZE / MAX_PER_ROW
+    canvas.width = canvas.height = SIZE
+    
+    const texture = new CanvasTexture(
+      canvas,
+      undefined,
+      RepeatWrapping,
+      RepeatWrapping,
+      NearestFilter,
+      NearestFilter
+    )
+    
+    const context = canvas.getContext('2d')
+    context.clearRect(0, 0, SIZE, SIZE)
+    context.font = `${fontSize}px monospace`
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.fillStyle = '#fff'
+    
+    for (let i = 0; i < characters.length; i++) {
+      const char = characters[i]
+      const x = i % MAX_PER_ROW
+      const y = Math.floor(i / MAX_PER_ROW)
+      context.fillText(char, x * CELL + CELL / 2, y * CELL + CELL / 2)
+    }
+    
+    texture.needsUpdate = true
+    this.uniforms.get('uCharacters').value = texture
+    this.uniforms.get('uCharactersCount').value = characters.length
+  }
+}
 
 function TorusKnot(props) {
   const meshRef = useRef()
   const [hovered, setHover] = useState(false)
   const [active, setActive] = useState(false)
-  
-  const { characters } = useControls('ascii', {
-    characters: { value: 'abcd', label: 'character set' }
-  })
   
   const { radius, tube, tubularSegments, radialSegments, p, q } = useControls('geometry', {
     radius: { value: 1, min: 0.1, max: 3, step: 0.1 },
@@ -80,9 +113,6 @@ function TorusKnot(props) {
   useFrame((state, delta) => {
     meshRef.current.rotation.x += delta
     meshRef.current.rotation.y += delta * 0.5
-    if (meshRef.current.material.uniforms) {
-      meshRef.current.material.uniforms.time.value = state.clock.elapsedTime
-    }
   })
   
   return (
@@ -94,14 +124,46 @@ function TorusKnot(props) {
       onPointerOver={(event) => setHover(true)}
       onPointerOut={(event) => setHover(false)}>
       <torusKnotGeometry args={[radius, tube, tubularSegments, radialSegments, p, q]} />
-      <shaderMaterial
-        fragmentShader={fragmentShader}
-        uniforms={{
-          time: { value: 0 }
-        }}
-      />
+      <meshStandardMaterial color={hovered ? 'hotpink' : 'orange'} />
     </mesh>
   )
+}
+
+function Effects() {
+  const { gl, scene, camera, size } = useThree()
+  
+  const { characters } = useControls('ascii', {
+    characters: { value: 'abcd', label: 'character set' }
+  })
+  
+  const composer = useMemo(() => {
+    const comp = new EffectComposer(gl)
+    comp.addPass(new RenderPass(scene, camera))
+    return comp
+  }, [gl, scene, camera])
+  
+  const asciiEffect = useMemo(() => new ASCIIEffect({ characters }), [])
+  
+  useEffect(() => {
+    asciiEffect.updateCharacters(characters, 54)
+  }, [characters, asciiEffect])
+  
+  const effectPass = useMemo(() => new EffectPass(camera, asciiEffect), [camera, asciiEffect])
+  
+  useEffect(() => {
+    composer.addPass(effectPass)
+    return () => composer.removePass(effectPass)
+  }, [composer, effectPass])
+  
+  useEffect(() => {
+    composer.setSize(size.width, size.height)
+  }, [composer, size])
+  
+  useFrame(() => {
+    composer.render()
+  }, 1)
+  
+  return null
 }
 
 export default function App() {
@@ -113,6 +175,7 @@ export default function App() {
         <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} decay={0} intensity={Math.PI} />
         <pointLight position={[-10, -10, -10]} decay={0} intensity={Math.PI} />
         <TorusKnot position={[0, 0, 0]} />
+        <Effects />
       </Canvas>
     </div>
   )
