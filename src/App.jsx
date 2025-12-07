@@ -1,12 +1,11 @@
-import React, { useRef, useState, useMemo, useEffect } from 'react'
-import { Canvas, useFrame, useThree, extend } from '@react-three/fiber'
-import { useControls } from 'leva'
-import { EffectComposer, RenderPass, EffectPass } from 'postprocessing'
-import { Effect } from 'postprocessing'
-import { Uniform, Color, CanvasTexture, NearestFilter, RepeatWrapping } from 'three'
+import React, { useRef, useState, useMemo } from "react";
+import { Canvas, useFrame } from "@react-three/fiber";
+import { EffectComposer } from "@react-three/postprocessing";
+import { useControls } from "leva";
+import { Effect } from "postprocessing";
+import { Uniform, CanvasTexture, NearestFilter, RepeatWrapping } from "three";
 
-extend({ EffectComposer, RenderPass, EffectPass })
-
+// 1. The Fragment Shader
 const fragmentShader = `
 uniform sampler2D uCharacters;
 uniform float uCharactersCount;
@@ -31,152 +30,186 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
     vec2 pixelizedUV = grid * (0.5 + floor(uv / grid));
     vec4 pixelized = texture2D(inputBuffer, pixelizedUV);
     float greyscaled = greyscale(pixelized.rgb).r;
-    
+
     if (uInvert) {
         greyscaled = 1.0 - greyscaled;
     }
-    
+
     float characterIndex = floor((uCharactersCount - 1.0) * greyscaled);
+    float scaleFactor = max(1.0, float(uCharactersCount) / 20.0);
+    characterIndex = floor(characterIndex * scaleFactor);
+
     vec2 characterPosition = vec2(mod(characterIndex, SIZE.x), floor(characterIndex / SIZE.y));
     vec2 offset = vec2(characterPosition.x, -characterPosition.y) / SIZE;
     vec2 charUV = mod(uv * (cell / SIZE), 1.0 / SIZE) - vec2(0., 1.0 / SIZE) + offset;
     vec4 asciiCharacter = texture2D(uCharacters, charUV);
-    asciiCharacter.rgb = uColor * asciiCharacter.r;
+
+    asciiCharacter.rgb = pixelized.rgb * asciiCharacter.r;
     asciiCharacter.a = pixelized.a;
-    outputColor = asciiCharacter;
-}
-`
 
-class ASCIIEffect extends Effect {
-  constructor({ characters = 'abcd', fontSize = 54, cellSize = 16, color = '#ffffff', invert = false } = {}) {
+    float boundarySize = 0.1;
+    float transitionStart = 0.5 - (boundarySize / 16.0);
+    float transitionEnd = 0.5 + (boundarySize / 8.0);
+
+    float blendFactor = smoothstep(transitionStart, transitionEnd, uv.x); 
+    vec4 originalColor = texture2D(inputBuffer, uv);
+    outputColor = mix(originalColor, asciiCharacter, blendFactor);
+}
+`;
+
+// 2. The Custom Post-Processing Effect Class
+class AsciiEffect extends Effect {
+  constructor({
+    characters = " .:,'-^=*+?!|0#X%WM@",
+    fontSize = 54,
+    cellSize = 22,
+    color = "#ffffff",
+    invert = false,
+  }) {
     const uniforms = new Map([
-      ['uCharacters', new Uniform(null)],
-      ['uCellSize', new Uniform(cellSize)],
-      ['uCharactersCount', new Uniform(characters.length)],
-      ['uColor', new Uniform(new Color(color))],
-      ['uInvert', new Uniform(invert)]
-    ])
-    super('ASCIIEffect', fragmentShader, { uniforms })
-    this.updateCharacters(characters, fontSize)
+      ["uCharacters", new Uniform(null)],
+      ["uCellSize", new Uniform(cellSize)],
+      ["uCharactersCount", new Uniform(characters.length)],
+      ["uColor", new Uniform(color)],
+      ["uInvert", new Uniform(invert)],
+    ]);
+
+    super("AsciiEffect", fragmentShader, { uniforms });
+
+    const charactersTexture = this.createCharactersTexture(
+      characters,
+      fontSize,
+    );
+    this.uniforms.get("uCharacters").value = charactersTexture;
   }
 
-  updateCharacters(characters, fontSize) {
-    const canvas = document.createElement('canvas')
-    const SIZE = 1024
-    const MAX_PER_ROW = 16
-    const CELL = SIZE / MAX_PER_ROW
-    canvas.width = canvas.height = SIZE
-    
-    const texture = new CanvasTexture(
-      canvas,
-      undefined,
-      RepeatWrapping,
-      RepeatWrapping,
-      NearestFilter,
-      NearestFilter
-    )
-    
-    const context = canvas.getContext('2d')
-    context.clearRect(0, 0, SIZE, SIZE)
-    context.font = `${fontSize}px monospace`
-    context.textAlign = 'center'
-    context.textBaseline = 'middle'
-    context.fillStyle = '#fff'
-    
+  createCharactersTexture(characters, fontSize) {
+    const canvas = document.createElement("canvas");
+    const size = 1024;
+    const rows = 16;
+    const step = size / rows;
+
+    canvas.width = canvas.height = size;
+    const context = canvas.getContext("2d");
+
+    if (!context) throw new Error("Context not available");
+
+    context.clearRect(0, 0, size, size);
+    context.font = `${fontSize}px arial`;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = "#fff";
+
     for (let i = 0; i < characters.length; i++) {
-      const char = characters[i]
-      const x = i % MAX_PER_ROW
-      const y = Math.floor(i / MAX_PER_ROW)
-      context.fillText(char, x * CELL + CELL / 2, y * CELL + CELL / 2)
+      const char = characters[i];
+      const x = i % rows;
+      const y = Math.floor(i / rows);
+      context.fillText(char, x * step + step / 2, y * step + step / 2);
     }
-    
-    texture.needsUpdate = true
-    this.uniforms.get('uCharacters').value = texture
-    this.uniforms.get('uCharactersCount').value = characters.length
+
+    const texture = new CanvasTexture(canvas);
+    texture.wrapS = RepeatWrapping;
+    texture.wrapT = RepeatWrapping;
+    texture.minFilter = NearestFilter;
+    texture.magFilter = NearestFilter;
+    texture.needsUpdate = true;
+
+    return texture;
   }
 }
 
+// 3. The 3D Component
 function TorusKnot(props) {
-  const meshRef = useRef()
-  const [hovered, setHover] = useState(false)
-  const [active, setActive] = useState(false)
-  
-  const { radius, tube, tubularSegments, radialSegments, p, q } = useControls('geometry', {
-    radius: { value: 1, min: 0.1, max: 3, step: 0.1 },
-    tube: { value: 0.3, min: 0.1, max: 1, step: 0.05 },
-    tubularSegments: { value: 128, min: 3, max: 256, step: 1 },
-    radialSegments: { value: 16, min: 3, max: 64, step: 1 },
-    p: { value: 2, min: 1, max: 10, step: 1 },
-    q: { value: 3, min: 1, max: 10, step: 1 }
-  })
-  
+  const ref = useRef();
+  const [hovered, setHover] = useState(false);
+  const [clicked, setClick] = useState(false);
+
   useFrame((state, delta) => {
-    meshRef.current.rotation.x += delta
-    meshRef.current.rotation.y += delta * 0.5
-  })
-  
+    if (ref.current) {
+      ref.current.rotation.x += 0.66 * delta;
+      ref.current.rotation.y += 0.66 * delta;
+    }
+  });
+
+  const config = useControls("TorusKnotGeometry", {
+    radius: { value: 2, min: 0, max: 10 },
+    tube: { value: 0.5, min: 0, max: 2 },
+    tubularSegments: { value: 96, min: 3, max: 300, step: 1 },
+    radialSegments: { value: 8, min: 3, max: 64, step: 1 },
+    p: { value: 2, min: 1, max: 20, step: 1 },
+    q: { value: 3, min: 1, max: 20, step: 1 },
+    scale: { value: 0.75, min: 0.1, max: 5 },
+  });
+
   return (
     <mesh
       {...props}
-      ref={meshRef}
-      scale={active ? 1.5 : 1}
-      onClick={(event) => setActive(!active)}
-      onPointerOver={(event) => setHover(true)}
-      onPointerOut={(event) => setHover(false)}>
-      <torusKnotGeometry args={[radius, tube, tubularSegments, radialSegments, p, q]} />
-      <meshStandardMaterial color={hovered ? 'hotpink' : 'orange'} />
+      ref={ref}
+      scale={config.scale}
+      onClick={() => setClick(!clicked)}
+      onPointerOver={() => setHover(true)}
+      onPointerOut={() => setHover(false)}
+    >
+      <torusKnotGeometry
+        args={[
+          config.radius,
+          config.tube,
+          config.tubularSegments,
+          config.radialSegments,
+          config.p,
+          config.q,
+        ]}
+      />
+      <meshStandardMaterial color={hovered ? "hotpink" : "orange"} />
     </mesh>
-  )
+  );
 }
 
-function Effects() {
-  const { gl, scene, camera, size } = useThree()
-  
-  const { characters } = useControls('ascii', {
-    characters: { value: 'abcd', label: 'character set' }
-  })
-  
-  const composer = useMemo(() => {
-    const comp = new EffectComposer(gl)
-    comp.addPass(new RenderPass(scene, camera))
-    return comp
-  }, [gl, scene, camera])
-  
-  const asciiEffect = useMemo(() => new ASCIIEffect({ characters }), [])
-  
-  useEffect(() => {
-    asciiEffect.updateCharacters(characters, 54)
-  }, [characters, asciiEffect])
-  
-  const effectPass = useMemo(() => new EffectPass(camera, asciiEffect), [camera, asciiEffect])
-  
-  useEffect(() => {
-    composer.addPass(effectPass)
-    return () => composer.removePass(effectPass)
-  }, [composer, effectPass])
-  
-  useEffect(() => {
-    composer.setSize(size.width, size.height)
-  }, [composer, size])
-  
-  useFrame(() => {
-    composer.render()
-  }, 1)
-  
-  return null
-}
-
+// 4. The Main Application
 export default function App() {
+  const { chars } = useControls("ASCII Shader", {
+    chars: " .,=mukund",
+  });
+
+  const effect = useMemo(() => {
+    return new AsciiEffect({
+      characters: chars,
+      fontSize: 54,
+      cellSize: 22,
+      color: "#ffffff",
+      invert: false,
+    });
+  }, [chars]);
+
   return (
-    <div style={{ width: '100vw', height: '100vh' }}>
-      <Canvas camera={{ position: [0, 0, 5] }}>
-        <color attach="background" args={['black']} />
-        <ambientLight intensity={Math.PI / 2} />
-        <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} decay={0} intensity={Math.PI} />
-        <pointLight position={[-10, -10, -10]} decay={0} intensity={Math.PI} />
-        <TorusKnot position={[0, 0, 0]} />
-        <Effects />
-      </Canvas>
-    </div>
-  )
+    // Style applied here to force full screen dimensions
+    <Canvas
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        width: "100vw",
+        height: "100vh",
+        background: "black",
+      }}
+    >
+      <color attach="background" args={["black"]} />
+
+      <ambientLight intensity={Math.PI / 2} />
+      <spotLight
+        position={[10, 10, 10]}
+        angle={0.15}
+        penumbra={1}
+        decay={0}
+        intensity={Math.PI}
+      />
+      <pointLight position={[-10, -10, -10]} decay={0} intensity={Math.PI} />
+
+      <TorusKnot position={[0, 0, 0]} />
+
+      <EffectComposer>
+        <primitive object={effect} />
+      </EffectComposer>
+    </Canvas>
+  );
 }
