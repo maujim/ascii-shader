@@ -1,9 +1,10 @@
-import React, { useRef, useState, useMemo } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
-import { EffectComposer } from "@react-three/postprocessing";
-import { useControls, folder } from "leva";
-import { Effect } from "postprocessing";
-import { Uniform, CanvasTexture, NearestFilter, RepeatWrapping } from "three";
+import React, { useRef, useState, useMemo, useEffect, useLayoutEffect } from 'react'
+import { Canvas, useFrame, useLoader } from '@react-three/fiber'
+import { EffectComposer } from '@react-three/postprocessing'
+import { useControls, button } from 'leva'
+import { Effect } from 'postprocessing'
+import { Uniform, CanvasTexture, NearestFilter, RepeatWrapping, Box3, Vector3 } from 'three'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader'
 
 // --- 1. ASCII SHADER & EFFECT ---
 
@@ -56,73 +57,60 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
     vec4 originalColor = texture2D(inputBuffer, uv);
     outputColor = mix(originalColor, asciiCharacter, blendFactor);
 }
-`;
+`
 
 class AsciiEffect extends Effect {
-  constructor({
-    characters = " .:,'-^=*+?!|0#X%WM@",
-    fontSize = 54,
-    cellSize = 22,
-    color = "#ffffff",
-    invert = false,
-  }) {
+  constructor({ characters = " .:,'-^=*+?!|0#X%WM@", fontSize = 54, cellSize = 22, color = "#ffffff", invert = false }) {
     const uniforms = new Map([
       ["uCharacters", new Uniform(null)],
       ["uCellSize", new Uniform(cellSize)],
       ["uCharactersCount", new Uniform(characters.length)],
       ["uColor", new Uniform(color)],
-      ["uInvert", new Uniform(invert)],
-    ]);
+      ["uInvert", new Uniform(invert)]
+    ])
 
-    super("AsciiEffect", fragmentShader, { uniforms });
+    super("AsciiEffect", fragmentShader, { uniforms })
 
-    const charactersTexture = this.createCharactersTexture(
-      characters,
-      fontSize,
-    );
-    this.uniforms.get("uCharacters").value = charactersTexture;
+    const charactersTexture = this.createCharactersTexture(characters, fontSize)
+    this.uniforms.get("uCharacters").value = charactersTexture
   }
 
   createCharactersTexture(characters, fontSize) {
-    const canvas = document.createElement("canvas");
-    const size = 1024;
-    const rows = 16;
-    const step = size / rows;
+    const canvas = document.createElement("canvas")
+    const size = 1024
+    const rows = 16
+    const step = size / rows
 
-    canvas.width = canvas.height = size;
-    const context = canvas.getContext("2d");
+    canvas.width = canvas.height = size
+    const context = canvas.getContext("2d")
+    
+    if (!context) throw new Error("Context not available")
 
-    if (!context) throw new Error("Context not available");
-
-    context.clearRect(0, 0, size, size);
-    context.font = `${fontSize}px arial`;
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.fillStyle = "#fff";
+    context.clearRect(0, 0, size, size)
+    context.font = `${fontSize}px arial`
+    context.textAlign = "center"
+    context.textBaseline = "middle"
+    context.fillStyle = "#fff"
 
     for (let i = 0; i < characters.length; i++) {
-      const char = characters[i];
-      const x = i % rows;
-      const y = Math.floor(i / rows);
-      context.fillText(char, x * step + step / 2, y * step + step / 2);
+      const char = characters[i]
+      const x = i % rows
+      const y = Math.floor(i / rows)
+      context.fillText(char, x * step + step / 2, y * step + step / 2)
     }
 
-    const texture = new CanvasTexture(canvas);
-    texture.wrapS = RepeatWrapping;
-    texture.wrapT = RepeatWrapping;
-    texture.minFilter = NearestFilter;
-    texture.magFilter = NearestFilter;
-    texture.needsUpdate = true;
+    const texture = new CanvasTexture(canvas)
+    texture.wrapS = RepeatWrapping
+    texture.wrapT = RepeatWrapping
+    texture.minFilter = NearestFilter
+    texture.magFilter = NearestFilter
+    texture.needsUpdate = true
 
-    return texture;
+    return texture
   }
 }
 
 // --- 2. GEOMETRY COMPONENTS ---
-
-// Each geometry component handles its own Leva controls.
-// When the parent switches components, these unmount/mount,
-// automatically updating the control panel.
 
 function TorusKnotGeometry() {
   const config = useControls("Model Parameters", {
@@ -132,20 +120,9 @@ function TorusKnotGeometry() {
     radialSegments: { value: 8, min: 3, max: 64, step: 1 },
     p: { value: 2, min: 1, max: 20, step: 1 },
     q: { value: 3, min: 1, max: 20, step: 1 },
-  });
-
-  return (
-    <torusKnotGeometry
-      args={[
-        config.radius,
-        config.tube,
-        config.tubularSegments,
-        config.radialSegments,
-        config.p,
-        config.q,
-      ]}
-    />
-  );
+  })
+  
+  return <torusKnotGeometry args={[config.radius, config.tube, config.tubularSegments, config.radialSegments, config.p, config.q]} />
 }
 
 function BoxGeometry() {
@@ -154,20 +131,9 @@ function BoxGeometry() {
     height: { value: 3, min: 1, max: 10 },
     depth: { value: 3, min: 1, max: 10 },
     widthSegments: { value: 1, min: 1, max: 20, step: 1 },
-  });
+  })
 
-  return (
-    <boxGeometry
-      args={[
-        config.width,
-        config.height,
-        config.depth,
-        config.widthSegments,
-        config.widthSegments,
-        config.widthSegments,
-      ]}
-    />
-  );
+  return <boxGeometry args={[config.width, config.height, config.depth, config.widthSegments, config.widthSegments, config.widthSegments]} />
 }
 
 function SphereGeometry() {
@@ -175,39 +141,63 @@ function SphereGeometry() {
     radius: { value: 2.5, min: 0.5, max: 10 },
     widthSegments: { value: 32, min: 3, max: 64, step: 1 },
     heightSegments: { value: 16, min: 2, max: 32, step: 1 },
-  });
+  })
 
-  return (
-    <sphereGeometry
-      args={[config.radius, config.widthSegments, config.heightSegments]}
-    />
-  );
+  return <sphereGeometry args={[config.radius, config.widthSegments, config.heightSegments]} />
 }
 
 function IcosahedronGeometry() {
   const config = useControls("Model Parameters", {
     radius: { value: 2.5, min: 0.5, max: 10 },
     detail: { value: 0, min: 0, max: 5, step: 1 },
-  });
+  })
 
-  return <icosahedronGeometry args={[config.radius, config.detail]} />;
+  return <icosahedronGeometry args={[config.radius, config.detail]} />
+}
+
+function CustomGeometry({ url }) {
+  const gltf = useLoader(GLTFLoader, url)
+  const ref = useRef()
+
+  // Auto-centering and scaling logic
+  useLayoutEffect(() => {
+    if (ref.current) {
+      const box = new Box3().setFromObject(ref.current)
+      const size = new Vector3()
+      box.getSize(size)
+      const center = new Vector3()
+      box.getCenter(center)
+
+      // Reset position to center
+      ref.current.position.set(-center.x, -center.y, -center.z)
+
+      // Scale to fit a normalized box (e.g., max dimension of 4)
+      const maxDim = Math.max(size.x, size.y, size.z)
+      const scale = 4 / maxDim
+      ref.current.scale.set(scale, scale, scale)
+    }
+  }, [gltf])
+
+  return (
+    <group>
+      <primitive ref={ref} object={gltf.scene} />
+    </group>
+  )
 }
 
 // --- 3. ROTATING WRAPPER COMPONENT ---
 
-// This handles the Mesh logic (Rotation, Material, Events)
-// but accepts the Geometry as a child.
 function RotatingMesh({ children, scale = 1 }) {
-  const ref = useRef();
-  const [hovered, setHover] = useState(false);
-  const [clicked, setClick] = useState(false);
+  const ref = useRef()
+  const [hovered, setHover] = useState(false)
+  const [clicked, setClick] = useState(false)
 
   useFrame((state, delta) => {
     if (ref.current) {
-      ref.current.rotation.x += 0.66 * delta;
-      ref.current.rotation.y += 0.66 * delta;
+      ref.current.rotation.x += 0.66 * delta
+      ref.current.rotation.y += 0.66 * delta
     }
-  });
+  })
 
   return (
     <mesh
@@ -220,21 +210,31 @@ function RotatingMesh({ children, scale = 1 }) {
       {children}
       <meshStandardMaterial color={hovered ? "hotpink" : "orange"} />
     </mesh>
-  );
+  )
 }
 
 // --- 4. SCENE COMPONENT ---
 
-function Scene() {
+function Scene({ inputRef, customModelUrl }) {
   // Global controls
-  const { chars, model, scale } = useControls("Settings", {
+  // We use the "api" returned by useControls (the second argument `set`) to programmatically update controls
+  const [{ chars, model, scale }, setControls] = useControls("Settings", () => ({
     chars: " .,=mukund",
-    model: {
-      value: "TorusKnot",
-      options: ["TorusKnot", "Box", "Sphere", "Icosahedron"],
+    // Button to trigger file input (ref is passed from App)
+    upload: button(() => inputRef.current?.click()),
+    model: { 
+      value: 'TorusKnot', 
+      options: ['TorusKnot', 'Box', 'Sphere', 'Icosahedron', 'Custom'] 
     },
     scale: { value: 0.75, min: 0.1, max: 3 },
-  });
+  }))
+
+  // Automatically switch the dropdown to 'Custom' when a new file is uploaded
+  useEffect(() => {
+    if (customModelUrl) {
+      setControls({ model: 'Custom' })
+    }
+  }, [customModelUrl, setControls])
 
   // Create effect
   const effect = useMemo(() => {
@@ -243,54 +243,61 @@ function Scene() {
       fontSize: 54,
       cellSize: 22,
       color: "#ffffff",
-      invert: false,
-    });
-  }, [chars]);
+      invert: false
+    })
+  }, [chars])
 
   return (
     <>
       <color attach="background" args={["black"]} />
-
+      
       <ambientLight intensity={Math.PI / 2} />
-      <spotLight
-        position={[10, 10, 10]}
-        angle={0.15}
-        penumbra={1}
-        decay={0}
-        intensity={Math.PI}
-      />
+      <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} decay={0} intensity={Math.PI} />
       <pointLight position={[-10, -10, -10]} decay={0} intensity={Math.PI} />
 
       <RotatingMesh scale={scale}>
-        {/* Conditionally render the geometry based on the dropdown */}
-        {model === "TorusKnot" && <TorusKnotGeometry />}
-        {model === "Box" && <BoxGeometry />}
-        {model === "Sphere" && <SphereGeometry />}
-        {model === "Icosahedron" && <IcosahedronGeometry />}
+        {model === 'TorusKnot' && <TorusKnotGeometry />}
+        {model === 'Box' && <BoxGeometry />}
+        {model === 'Sphere' && <SphereGeometry />}
+        {model === 'Icosahedron' && <IcosahedronGeometry />}
+        {model === 'Custom' && customModelUrl && <CustomGeometry url={customModelUrl} />}
       </RotatingMesh>
 
       <EffectComposer>
         <primitive object={effect} />
       </EffectComposer>
     </>
-  );
+  )
 }
 
 // --- 5. MAIN ENTRY ---
 
 export default function App() {
+  const inputRef = useRef(null)
+  const [customModelUrl, setCustomModelUrl] = useState(null)
+
+  const handleFileUpload = (event) => {
+    const file = event.target.files[0]
+    if (file) {
+      const url = URL.createObjectURL(file)
+      setCustomModelUrl(url)
+    }
+  }
+
   return (
-    <Canvas
-      style={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        width: "100vw",
-        height: "100vh",
-        background: "black",
-      }}
-    >
-      <Scene />
-    </Canvas>
-  );
+    <>
+      {/* HTML Input must be OUTSIDE the Canvas */}
+      <input 
+        type="file" 
+        ref={inputRef} 
+        style={{ display: 'none' }} 
+        accept=".glb,.gltf"
+        onChange={handleFileUpload}
+      />
+
+      <Canvas style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'black' }}>
+        <Scene inputRef={inputRef} customModelUrl={customModelUrl} />
+      </Canvas>
+    </>
+  )
 }
